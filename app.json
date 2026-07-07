@@ -1,6 +1,7 @@
 {
   "expo": {
     "scheme": "cybergame",
+     "assets": ["assets/sounds/"],
     "name": "CyberGame",
     "slug": "CyberGame",
     "version": "1.0.0",

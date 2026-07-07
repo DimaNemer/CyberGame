@@ -249,7 +249,28 @@ export default function Settings() {
                             </TouchableOpacity>
                         ))}
                     </View>
-
+<TouchableOpacity
+  style={styles.accountRow}
+  activeOpacity={0.7}
+  onPress={async () => {
+    // Clear all game tutorials
+    const keys = await AsyncStorage.getAllKeys();
+    const tourKeys = keys.filter(k => k.startsWith("howto_seen_"));
+    await AsyncStorage.multiRemove(tourKeys);
+    Alert.alert(
+      "Tutorials Reset",
+      "The how-to-play guide will show again next time you open each game.",
+      [{ text: "OK" }]
+    );
+  }}
+>
+  <Text style={styles.settingIcon}>🎓</Text>
+  <View style={styles.accountInfo}>
+    <Text style={styles.settingLabel}>Replay Game Tutorials</Text>
+    <Text style={styles.settingSub}>Show the how-to-play guide again for all games</Text>
+  </View>
+  <Text style={styles.chevron}>›</Text>
+</TouchableOpacity>
                 </View>
 
                 {/* ── Notifications ── */}
