@@ -1,7 +1,7 @@
 import {
   View, Text, TouchableOpacity, StyleSheet, Dimensions,
 } from "react-native";
-import { COLORS } from "../constants/colors";
+import { COLORS } from "../../constants/colors";
 
 const { width } = Dimensions.get("window");
 const CARD_W = (width - 48) / 2;
