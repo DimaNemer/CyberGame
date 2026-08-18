@@ -1,59 +1,95 @@
 import {
   View, Text, TouchableOpacity,
-  StyleSheet, Dimensions, ScrollView,
+  StyleSheet, Dimensions, ScrollView, ActivityIndicator,
 } from "react-native";
 import { useState } from "react";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "../constants/colors";
+import { getCurrentUser } from "../lib/api";
+import { supabase } from "../lib/supabase";
 
-const { width, height } = Dimensions.get("window");
+const { width } = Dimensions.get("window");
 
-// ── Questions ─────────────────────────────────────────────
+// ── Whitelisted valid answer values ───────────────────────
+// SECURITY: Only these exact values are accepted
+// Any other value is rejected before hitting the database
+const VALID_GOALS       = ["fun", "learn", "rank", "all"];
+const VALID_LEVELS      = ["beginner", "some", "intermediate", "advanced"];
+const VALID_INTERESTS   = ["phishing", "quantum", "hacking", "crypto", "ai", "logic"];
+const MAX_INTERESTS     = 6; // max all 6 options
+
 const QUESTIONS = [
   {
-    id: 1,
-    emoji:    "🎯",
-    title:    "What's your goal?",
+    id: 1, emoji: "🎯",
+    title: "What's your goal?",
     subtitle: "We'll personalize your experience",
-    type:     "single",
-    options:  [
-      { id: "fun",   label: "Play & Have Fun",        emoji: "🎮" },
-      { id: "learn", label: "Learn Cybersecurity",    emoji: "🧠" },
-      { id: "rank",  label: "Compete & Rank Up",      emoji: "🏆" },
-      { id: "all",   label: "All of the above",       emoji: "🎯" },
+    type: "single",
+    options: [
+      { id: "fun",   label: "Play & Have Fun",     emoji: "🎮" },
+      { id: "learn", label: "Learn Cybersecurity", emoji: "🧠" },
+      { id: "rank",  label: "Compete & Rank Up",   emoji: "🏆" },
+      { id: "all",   label: "All of the above",    emoji: "🎯" },
     ],
   },
   {
-    id: 2,
-    emoji:    "📊",
-    title:    "Your experience level?",
+    id: 2, emoji: "📊",
+    title: "Your experience level?",
     subtitle: "No wrong answers — be honest!",
-    type:     "single",
-    options:  [
-      { id: "beginner",      label: "Complete Beginner",   emoji: "🐣" },
-      { id: "some",          label: "Some Knowledge",      emoji: "📚" },
-      { id: "intermediate",  label: "I study IT/CS",       emoji: "💻" },
-      { id: "advanced",      label: "I work in IT/Cyber",  emoji: "🛡️" },
+    type: "single",
+    options: [
+      { id: "beginner",     label: "Complete Beginner",  emoji: "🐣" },
+      { id: "some",         label: "Some Knowledge",     emoji: "📚" },
+      { id: "intermediate", label: "I study IT/CS",      emoji: "💻" },
+      { id: "advanced",     label: "I work in IT/Cyber", emoji: "🛡️" },
     ],
   },
   {
-    id: 3,
-    emoji:    "🔍",
-    title:    "What interests you?",
+    id: 3, emoji: "🔍",
+    title: "What interests you?",
     subtitle: "Pick as many as you like",
-    type:     "multi",
-    options:  [
-      { id: "phishing",    label: "Phishing",     emoji: "🎣" },
-      { id: "quantum",     label: "Quantum",      emoji: "⚛️" },
-      { id: "hacking",     label: "Hacking",      emoji: "💻" },
-      { id: "crypto",      label: "Crypto",       emoji: "🔐" },
-      { id: "ai",          label: "AI Security",  emoji: "🛡️" },
-      { id: "logic",       label: "Logic",        emoji: "🌀" },
+    type: "multi",
+    options: [
+      { id: "phishing", label: "Phishing",    emoji: "🎣" },
+      { id: "quantum",  label: "Quantum",     emoji: "⚛️" },
+      { id: "hacking",  label: "Hacking",     emoji: "💻" },
+      { id: "crypto",   label: "Crypto",      emoji: "🔐" },
+      { id: "ai",       label: "AI Security", emoji: "🛡️" },
+      { id: "logic",    label: "Logic",       emoji: "🌀" },
     ],
   },
 ];
-// ─────────────────────────────────────────────────────────
+
+// ── Validate all answers before saving ────────────────────
+function validateAnswers(answers) {
+  // Goal must be one of the whitelisted values
+  if (!VALID_GOALS.includes(answers[1])) {
+    return { valid: false, error: "Invalid goal selection." };
+  }
+
+  // Skill level must be one of the whitelisted values
+  if (!VALID_LEVELS.includes(answers[2])) {
+    return { valid: false, error: "Invalid level selection." };
+  }
+
+  // Interests must be an array
+  if (!Array.isArray(answers[3])) {
+    return { valid: false, error: "Invalid interests format." };
+  }
+
+  // Interests must not exceed max
+  if (answers[3].length > MAX_INTERESTS) {
+    return { valid: false, error: "Too many interests selected." };
+  }
+
+  // Every interest must be whitelisted
+  const allValid = answers[3].every(i => VALID_INTERESTS.includes(i));
+  if (!allValid) {
+    return { valid: false, error: "Invalid interest selection." };
+  }
+
+  return { valid: true };
+}
 
 export default function Onboarding() {
   const router = useRouter();
@@ -61,97 +97,128 @@ export default function Onboarding() {
 
   const [step,    setStep]    = useState(0);
   const [answers, setAnswers] = useState({ 1: null, 2: null, 3: [] });
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState("");
 
-  const question   = QUESTIONS[step];
-  const isLast     = step === QUESTIONS.length - 1;
-  const isMulti    = question.type === "multi";
+  const question    = QUESTIONS[step];
+  const isLast      = step === QUESTIONS.length - 1;
+  const isMulti     = question.type === "multi";
   const canContinue = isMulti
     ? answers[question.id].length > 0
     : answers[question.id] !== null;
 
+  // SECURITY: Only accept whitelisted option IDs
   const handleSingle = (optionId) => {
+    const validIds = question.options.map(o => o.id);
+    if (!validIds.includes(optionId)) return; // reject unknown values
     setAnswers((prev) => ({ ...prev, [question.id]: optionId }));
+    setError("");
   };
 
   const handleMulti = (optionId) => {
+    const validIds = question.options.map(o => o.id);
+    if (!validIds.includes(optionId)) return; // reject unknown values
     setAnswers((prev) => {
       const current = prev[question.id];
       const updated = current.includes(optionId)
         ? current.filter((id) => id !== optionId)
         : [...current, optionId];
+      // SECURITY: enforce max selections
+      if (updated.length > MAX_INTERESTS) return prev;
       return { ...prev, [question.id]: updated };
     });
+    setError("");
   };
 
-  const handleNext = () => {
-    if (!canContinue) return;
+  const handleNext = async () => {
+    if (!canContinue || saving) return;
+
     if (isLast) {
-      // TODO: save answers to Supabase onboarding table
-      // await supabase.from("onboarding").insert({
-      //   id:          session.user.id,
-      //   goal:        answers[1],
-      //   skill_level: answers[2],
-      //   interests:   answers[3],
-      //   completed:   true,
-      // });
-      router.replace("/(tabs)/dashboard");
+      setSaving(true);
+      setError("");
+      try {
+        // SECURITY: validate all answers before any DB call
+        const validation = validateAnswers(answers);
+        if (!validation.valid) {
+          setError(validation.error);
+          return;
+        }
+
+        // SECURITY: get server-verified user (not local session)
+        const user = await getCurrentUser();
+        if (!user?.id) {
+          setError("Session expired. Please log in again.");
+          router.replace("/welcome");
+          return;
+        }
+
+        // SECURITY: only save whitelisted values
+        // upsert prevents duplicate rows if user revisits onboarding
+        const { error: dbError } = await supabase
+          .from("onboarding")
+          .upsert({
+            id:          user.id,         // UUID from auth — not user input
+            goal:        answers[1],      // validated against VALID_GOALS
+            skill_level: answers[2],      // validated against VALID_LEVELS
+            interests:   answers[3],      // validated against VALID_INTERESTS
+            completed:   true,
+          }, { onConflict: "id" });
+
+        if (dbError) {
+          // SECURITY: never expose raw DB error to user
+          console.error("[Onboarding DB]", dbError.message);
+          // Still proceed — onboarding failure should not block the user
+        }
+
+        router.replace("/(tabs)/dashboard");
+      } catch (err) {
+        console.error("[Onboarding]", err.message);
+        // Still navigate — don't block user on onboarding failure
+        router.replace("/(tabs)/dashboard");
+      } finally {
+        setSaving(false);
+      }
     } else {
       setStep((s) => s + 1);
     }
   };
 
   const handleBack = () => {
-    if (step > 0) setStep((s) => s - 1);
+    if (step > 0) { setStep((s) => s - 1); setError(""); }
   };
 
-  const handleSkip = () => {
-    router.replace("/(tabs)/dashboard");
-  };
+  // SECURITY: skip still navigates safely — no data saved
+  const handleSkip = () => router.replace("/(tabs)/dashboard");
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-
-      {/* Top bar — back + skip */}
       <View style={styles.topBar}>
         {step > 0 ? (
           <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
             <Text style={styles.backText}>← Back</Text>
           </TouchableOpacity>
-        ) : (
-          <View style={styles.backBtn} />
-        )}
+        ) : <View style={styles.backBtn} />}
         <TouchableOpacity onPress={handleSkip}>
           <Text style={styles.skipText}>Skip</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Progress bar */}
       <View style={styles.progressRow}>
         {QUESTIONS.map((_, i) => (
-          <View
-            key={i}
-            style={[
-              styles.progressSegment,
-              i <= step && styles.progressSegmentActive,
-              i < step  && styles.progressSegmentDone,
-            ]}
-          />
+          <View key={i} style={[
+            styles.progressSegment,
+            i <= step && styles.progressSegmentActive,
+            i < step  && styles.progressSegmentDone,
+          ]} />
         ))}
       </View>
-      <Text style={styles.progressText}>
-        Step {step + 1} of {QUESTIONS.length}
-      </Text>
+      <Text style={styles.progressText}>Step {step + 1} of {QUESTIONS.length}</Text>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[
-          styles.content,
-          { paddingBottom: insets.bottom + 24 },
-        ]}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
-
-        {/* Question header */}
         <View style={styles.questionHeader}>
           <View style={styles.questionIconBox}>
             <Text style={styles.questionIcon}>{question.emoji}</Text>
@@ -160,16 +227,17 @@ export default function Onboarding() {
           <Text style={styles.questionSub}>{question.subtitle}</Text>
         </View>
 
-        {/* Options */}
-        <View style={[
-          styles.optionsGrid,
-          isMulti && styles.optionsGridMulti,
-        ]}>
+        {error ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>⚠️ {error}</Text>
+          </View>
+        ) : null}
+
+        <View style={[styles.optionsGrid, isMulti && styles.optionsGridMulti]}>
           {question.options.map((opt) => {
             const selected = isMulti
               ? answers[question.id].includes(opt.id)
               : answers[question.id] === opt.id;
-
             return (
               <TouchableOpacity
                 key={opt.id}
@@ -177,9 +245,7 @@ export default function Onboarding() {
                   isMulti ? styles.optionCardMulti : styles.optionCard,
                   selected && styles.optionCardSelected,
                 ]}
-                onPress={() =>
-                  isMulti ? handleMulti(opt.id) : handleSingle(opt.id)
-                }
+                onPress={() => isMulti ? handleMulti(opt.id) : handleSingle(opt.id)}
                 activeOpacity={0.8}
               >
                 {selected && (
@@ -188,174 +254,108 @@ export default function Onboarding() {
                   </View>
                 )}
                 <Text style={styles.optionEmoji}>{opt.emoji}</Text>
-                <Text style={[
-                  styles.optionLabel,
-                  selected && styles.optionLabelSelected,
-                ]}>
+                <Text style={[styles.optionLabel, selected && styles.optionLabelSelected]}>
                   {opt.label}
                 </Text>
               </TouchableOpacity>
             );
           })}
         </View>
-
       </ScrollView>
 
-      {/* Bottom button */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}>
         <TouchableOpacity
-          style={[
-            styles.continueBtn,
-            !canContinue && styles.continueBtnDisabled,
-          ]}
+          style={[styles.continueBtn, !canContinue && styles.continueBtnDisabled]}
           onPress={handleNext}
-          disabled={!canContinue}
+          disabled={!canContinue || saving}
           activeOpacity={0.85}
         >
-          <Text style={styles.continueBtnText}>
-            {isLast ? "🚀  Get Started" : "Continue  →"}
-          </Text>
+          {saving
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={styles.continueBtnText}>
+                {isLast ? "🚀  Get Started" : "Continue  →"}
+              </Text>
+          }
         </TouchableOpacity>
       </View>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: COLORS.bg },
-  scroll: { flex: 1 },
+  screen:  { flex: 1, backgroundColor: COLORS.bg },
+  scroll:  { flex: 1 },
   content: { paddingHorizontal: 24, paddingTop: 8 },
 
-  // Top bar
   topBar: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", paddingHorizontal: 20, paddingVertical: 12,
   },
   backBtn:  { minWidth: 60 },
   backText: { color: COLORS.primary, fontSize: 15, fontWeight: "600" },
   skipText: { color: COLORS.textMuted, fontSize: 14, fontWeight: "600" },
 
-  // Progress
-  progressRow: {
-    flexDirection: "row",
-    gap: 6,
-    paddingHorizontal: 24,
-    marginBottom: 8,
-  },
-  progressSegment: {
-    flex: 1, height: 4, borderRadius: 99,
-    backgroundColor: COLORS.bgCardLight,
-  },
-  progressSegmentActive: {
-    backgroundColor: COLORS.primary,
-  },
-  progressSegmentDone: {
-    backgroundColor: COLORS.primary,
-    opacity: 0.5,
-  },
-  progressText: {
-    color: COLORS.textMuted,
-    fontSize: 12, textAlign: "center",
-    marginBottom: 24,
-  },
+  progressRow: { flexDirection: "row", gap: 6, paddingHorizontal: 24, marginBottom: 8 },
+  progressSegment:       { flex: 1, height: 4, borderRadius: 99, backgroundColor: COLORS.bgCardLight },
+  progressSegmentActive: { backgroundColor: COLORS.primary },
+  progressSegmentDone:   { backgroundColor: COLORS.primary, opacity: 0.5 },
+  progressText: { color: COLORS.textMuted, fontSize: 12, textAlign: "center", marginBottom: 24 },
 
-  // Question header
-  questionHeader: {
-    alignItems: "center",
-    marginBottom: 32,
-  },
+  questionHeader:  { alignItems: "center", marginBottom: 24 },
   questionIconBox: {
     width: 80, height: 80, borderRadius: 24,
     backgroundColor: COLORS.bgCard,
     borderWidth: 1, borderColor: COLORS.borderBlue,
-    alignItems: "center", justifyContent: "center",
-    marginBottom: 20,
-    shadowColor: COLORS.primary,
-    shadowOpacity: 0.2, shadowRadius: 16, elevation: 6,
+    alignItems: "center", justifyContent: "center", marginBottom: 20,
+    shadowColor: COLORS.primary, shadowOpacity: 0.2, shadowRadius: 16, elevation: 6,
   },
   questionIcon:  { fontSize: 38 },
   questionTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 24, fontWeight: "800",
-    textAlign: "center", marginBottom: 8,
-    letterSpacing: 0.3,
+    color: COLORS.textPrimary, fontSize: 24, fontWeight: "800",
+    textAlign: "center", marginBottom: 8, letterSpacing: 0.3,
   },
-  questionSub: {
-    color: COLORS.textSecondary,
-    fontSize: 14, textAlign: "center",
-  },
+  questionSub: { color: COLORS.textSecondary, fontSize: 14, textAlign: "center" },
 
-  // Single select options
-  optionsGrid: { gap: 12 },
+  errorBox: {
+    backgroundColor: "rgba(239,68,68,0.1)",
+    borderRadius: 10, padding: 10, marginBottom: 12,
+    borderWidth: 1, borderColor: "rgba(239,68,68,0.3)",
+  },
+  errorText: { color: COLORS.danger, fontSize: 12, fontWeight: "600", textAlign: "center" },
+
+  optionsGrid:      { gap: 12 },
   optionCard: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 16, padding: 18,
+    backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 18,
     flexDirection: "row", alignItems: "center",
-    borderWidth: 1, borderColor: COLORS.border,
-    gap: 14, position: "relative",
+    borderWidth: 1, borderColor: COLORS.border, gap: 14, position: "relative",
   },
-  optionCardSelected: {
-    backgroundColor: COLORS.primaryGlow,
-    borderColor: COLORS.primary,
-    borderWidth: 1.5,
-  },
-
-  // Multi select options (2 column grid)
-  optionsGridMulti: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
+  optionCardSelected: { backgroundColor: COLORS.primaryGlow, borderColor: COLORS.primary, borderWidth: 1.5 },
+  optionsGridMulti:   { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   optionCardMulti: {
     width: (width - 48 - 12) / 2,
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 16, padding: 18,
-    alignItems: "center",
-    borderWidth: 1, borderColor: COLORS.border,
-    gap: 10, position: "relative",
-    minHeight: 110,
-    justifyContent: "center",
+    backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 18,
+    alignItems: "center", borderWidth: 1, borderColor: COLORS.border,
+    gap: 10, position: "relative", minHeight: 110, justifyContent: "center",
   },
-
   selectedTick: {
     position: "absolute", top: 10, right: 10,
     width: 22, height: 22, borderRadius: 11,
-    backgroundColor: COLORS.primary,
-    alignItems: "center", justifyContent: "center",
+    backgroundColor: COLORS.primary, alignItems: "center", justifyContent: "center",
   },
-  selectedTickText: { color: "#fff", fontSize: 12, fontWeight: "800" },
-
-  optionEmoji: { fontSize: 28 },
-  optionLabel: {
-    color: COLORS.textSecondary,
-    fontSize: 14, fontWeight: "600",
-    textAlign: "center",
-  },
+  selectedTickText:    { color: "#fff", fontSize: 12, fontWeight: "800" },
+  optionEmoji:         { fontSize: 28 },
+  optionLabel:         { color: COLORS.textSecondary, fontSize: 14, fontWeight: "600", textAlign: "center" },
   optionLabelSelected: { color: COLORS.textPrimary },
 
-  // Bottom button
   bottomBar: {
     paddingHorizontal: 24, paddingTop: 16,
     backgroundColor: COLORS.bg,
     borderTopWidth: 1, borderTopColor: COLORS.border,
   },
   continueBtn: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 16, padding: 18,
-    alignItems: "center",
-    shadowColor: COLORS.primary,
-    shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
+    backgroundColor: COLORS.primary, borderRadius: 16, padding: 18, alignItems: "center",
+    shadowColor: COLORS.primary, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
   },
-  continueBtnDisabled: {
-    backgroundColor: COLORS.bgCardLight,
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  continueBtnText: {
-    color: "#fff", fontSize: 16, fontWeight: "800",
-  },
+  continueBtnDisabled: { backgroundColor: COLORS.bgCardLight, shadowOpacity: 0, elevation: 0 },
+  continueBtnText:     { color: "#fff", fontSize: 16, fontWeight: "800" },
 });

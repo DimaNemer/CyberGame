@@ -6,7 +6,12 @@ import {
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useAudioPlayer } from "expo-audio";
+import { useSettings } from "../context/SettingsContext";
+import * as Haptics from "expo-haptics";
+import {
+  useAudioPlayer,
+  setAudioModeAsync,
+} from "expo-audio";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 
@@ -20,6 +25,8 @@ import CipherCard      from "../components/games/CipherCard";
 import AISecurityCard  from "../components/games/AISecurityCard";
 import CryptoMazeGame from "../components/games/crypto-maze/CryptoMazeGame";
 import NetworkHunterGame from "../components/games/network-hunter/NetworkHunterGame";
+import QuantumLogicGame
+  from "../components/games/quantum-logic/QuantumLogicGame";
 
 // ── Game data ──────────────────────────────────────────────
 import {
@@ -49,6 +56,9 @@ export default function GamePlayer() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams();
+  const { settings } = useSettings();
+const soundEnabled = settings?.soundEnabled !== false;
+const hintsEnabled = settings?.showHints !== false;
 
   const [phase,        setPhase]        = useState("loading");
   const [questions,    setQuestions]    = useState([]);
@@ -82,27 +92,180 @@ export default function GamePlayer() {
   const flashAnim    = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(1)).current;
 
-  const player = useAudioPlayer(musicSource);
+ const vibrationEnabled =
+  settings?.vibration !== false;
 
-  const playMusic = useCallback(() => {
+const timerSoundEnabled =
+  settings?.timerSound !== false;
+
+const player = useAudioPlayer(musicSource);
+
+const timerWarningPlayer = useAudioPlayer(
+  require("../assets/sounds/timer-warning.mp3")
+);
+  useEffect(() => {
+  let mounted = true;
+
+  const configureAudio = async () => {
     try {
-      if (!isMuted && musicSource) {
-        player.loop = true; player.volume = 1.0; player.play();
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
+        interruptionMode: "doNotMix",
+      });
+    } catch (error) {
+      if (mounted) {
+        console.error(
+          "[Audio config]",
+          error?.message
+        );
       }
-    } catch (e) {}
-  }, [isMuted, musicSource, player]);
+    }
+  };
 
-  const pauseMusic = useCallback(() => {
-    try { player.pause(); } catch (e) {}
-  }, [player]);
+  configureAudio();
 
-  const toggleMute = useCallback(() => {
+  return () => {
+    mounted = false;
+  };
+}, []);
+
+const playMusic = useCallback(() => {
+  try {
+    // Global Settings switch has priority over the local mute button.
+    if (
+      !soundEnabled ||
+      isMuted ||
+      !musicSource ||
+      !player
+    ) {
+      return;
+    }
+
+    player.loop = true;
+    player.volume = 0.45;
+    player.play();
+  } catch (error) {
+    console.error(
+      "[playMusic]",
+      error?.message
+    );
+  }
+}, [
+  soundEnabled,
+  isMuted,
+  musicSource,
+  player,
+]);
+const pauseMusic = useCallback(() => {
+  try {
+    player?.pause();
+  } catch (error) {
+    console.error(
+      "[pauseMusic]",
+      error?.message
+    );
+  }
+}, [player]);
+useEffect(() => {
+  try {
+    if (!player) return;
+
+    if (!soundEnabled) {
+      player.pause();
+      return;
+    }
+
+    // If global sound was turned back ON,
+    // respect the game's local mute state.
+    if (
+      !isMuted &&
+      musicReady &&
+      musicSource
+    ) {
+      player.loop = true;
+      player.volume = 0.45;
+      player.play();
+    }
+  } catch (error) {
+    console.error(
+      "[GlobalSoundSetting]",
+      error?.message
+    );
+  }
+}, [
+  soundEnabled,
+  isMuted,
+  musicReady,
+  musicSource,
+  player,
+]);
+
+const triggerHaptic = useCallback(
+  async (type = "light") => {
+    if (!vibrationEnabled) return;
+
     try {
-      if (isMuted) { player.volume = 1.0; player.play(); }
-      else { player.pause(); }
-      setIsMuted(p => !p);
-    } catch (e) {}
-  }, [isMuted, player]);
+      if (type === "success") {
+        await Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success
+        );
+      } else if (type === "error") {
+        await Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Error
+        );
+      } else {
+        await Haptics.impactAsync(
+          Haptics.ImpactFeedbackStyle.Light
+        );
+      }
+    } catch (error) {
+      console.error(
+        "[Haptics]",
+        error?.message
+      );
+    }
+  },
+  [vibrationEnabled]
+);
+
+const toggleMute = useCallback(() => {
+  try {
+    if (!player) {
+      return;
+    }
+
+    // Global Sound Effects OFF is the master setting.
+    // The in-game button must not override it.
+    if (!soundEnabled) {
+      player.pause();
+      return;
+    }
+
+    setIsMuted((previousMuted) => {
+      const nextMuted = !previousMuted;
+
+      if (nextMuted) {
+        player.pause();
+      } else if (musicSource) {
+        player.loop = true;
+        player.volume = 0.45;
+        player.play();
+      }
+
+      return nextMuted;
+    });
+  } catch (error) {
+    console.error(
+      "[toggleMute]",
+      error?.message
+    );
+  }
+}, [
+  soundEnabled,
+  musicSource,
+  player,
+]);
 
   useEffect(() => {
     return () => {
@@ -135,11 +298,38 @@ export default function GamePlayer() {
         getGameQuestions(id),
       ]);
 
-      if (!currentUser)                     { router.replace("/welcome"); return; }
-      if (gameData.error || !gameData.data) { setError("Game not found."); return; }
-      if (!qs || qs.length === 0)           { setError("No questions available."); return; }
+     if (!currentUser) {
+  router.replace("/welcome");
+  return;
+}
 
-      const title    = gameData.data.title;
+if (gameData.error || !gameData.data) {
+  setError("Game not found.");
+  return;
+}
+
+const title = gameData.data.title;
+
+// Games that do NOT depend on SQL questions
+const questionlessGames = [
+  "Quantum Logic",
+];
+
+const isQuestionlessGame =
+  questionlessGames.includes(title);
+
+// Normal question-based games still require SQL questions
+if (
+  !isQuestionlessGame &&
+  (!Array.isArray(qs) || qs.length === 0)
+) {
+  setError("No questions available.");
+  return;
+}
+
+// Always normalize to a safe array
+const safeQuestions =
+  Array.isArray(qs) ? qs : [];
       const timer    = GAME_TIMERS[title]  ?? GAME_TIMERS.default;
       const sc       = GAME_SCORING[title] ?? GAME_SCORING.default;
     //  const shuffled = [...qs].sort(() => Math.random() - 0.5); replace this with below one
@@ -149,12 +339,12 @@ const requiresOrderedQuestions =
 
 const preparedQuestions =
   requiresOrderedQuestions
-    ? [...qs].sort(
+    ? [...safeQuestions].sort(
         (a, b) =>
           (Number(a?.order_num) || 0) -
           (Number(b?.order_num) || 0)
       )
-    : [...qs].sort(() => Math.random() - 0.5);
+   : [...safeQuestions].sort(() => Math.random() - 0.5);
 
       userRef.current = currentUser;
       setUser(currentUser);
@@ -175,12 +365,20 @@ if (title === "Crypto Maze") {
   setMusicReady(true);
   return;
 }
+
 if (title === "Network Hunter") {
   setGameStartAt(Date.now());
   setPhase("hunter");
   setMusicReady(true);
   return;
 }
+if (title === "Quantum Logic") {
+  setGameStartAt(Date.now());
+  setPhase("quantumLogic");
+  setMusicReady(true);
+  return;
+}
+
 
       const storageKey = `howto_seen_${currentUser.id}_${id}`;
       const seen = await AsyncStorage.getItem(storageKey);
@@ -252,7 +450,8 @@ if (title === "Network Hunter") {
   };
 
   const handleHelpPress = () => {
-    if (phase !== "playing") return;
+  if (!hintsEnabled) return;
+  if (phase !== "playing") return;
     if (!helpUsed) {
       timerPaused.current = true;
       clearInterval(intervalRef.current);
@@ -273,60 +472,125 @@ if (title === "Network Hunter") {
   };
 
   const startTimer = useCallback((seconds) => {
-    const secs = seconds ?? timerMax;
-    timeLeftRef.current = secs;
-    setTimeLeft(secs);
-    setStartTime(Date.now());
-    progressAnim.setValue(1);
-    Animated.timing(progressAnim, {
-      toValue: 0, duration: secs * 1000, useNativeDriver: false,
-    }).start();
-    intervalRef.current = setInterval(() => {
-      if (timerPaused.current) return;
-      timeLeftRef.current -= 1;
-      setTimeLeft(timeLeftRef.current);
-      if (timeLeftRef.current <= 0) {
-        clearInterval(intervalRef.current);
-        handleTimeout();
+  const secs = seconds ?? timerMax;
+
+  timeLeftRef.current = secs;
+  setTimeLeft(secs);
+  setStartTime(Date.now());
+
+  progressAnim.setValue(1);
+
+  Animated.timing(progressAnim, {
+    toValue: 0,
+    duration: secs * 1000,
+    useNativeDriver: false,
+  }).start();
+
+  intervalRef.current = setInterval(() => {
+    if (timerPaused.current) return;
+
+    timeLeftRef.current -= 1;
+    setTimeLeft(timeLeftRef.current);
+
+    // 🔔 Warn player when 5 seconds remain
+    if (
+      timeLeftRef.current === 5 &&
+      timerSoundEnabled &&
+      soundEnabled
+    ) {
+      try {
+        timerWarningPlayer.seekTo?.(0);
+        timerWarningPlayer.volume = 0.6;
+        timerWarningPlayer.play();
+      } catch (error) {
+        console.error(
+          "[TimerWarning]",
+          error?.message
+        );
       }
-    }, 1000);
-  }, [timerMax]);
+    }
+
+    if (timeLeftRef.current <= 0) {
+      clearInterval(intervalRef.current);
+      handleTimeout();
+    }
+  }, 1000);
+}, [
+  timerMax,
+  timerSoundEnabled,
+  soundEnabled,
+  timerWarningPlayer,
+]);
 
   const resumeTimer = useCallback(() => {
-    const remaining = timeLeftRef.current;
-    if (remaining <= 0) return;
-    Animated.timing(progressAnim, {
-      toValue: 0, duration: remaining * 1000, useNativeDriver: false,
-    }).start();
-    intervalRef.current = setInterval(() => {
-      if (timerPaused.current) return;
-      timeLeftRef.current -= 1;
-      setTimeLeft(timeLeftRef.current);
-      if (timeLeftRef.current <= 0) {
-        clearInterval(intervalRef.current);
-        handleTimeout();
+  const remaining = timeLeftRef.current;
+
+  if (remaining <= 0) return;
+
+  Animated.timing(progressAnim, {
+    toValue: 0,
+    duration: remaining * 1000,
+    useNativeDriver: false,
+  }).start();
+
+  intervalRef.current = setInterval(() => {
+    if (timerPaused.current) return;
+
+    timeLeftRef.current -= 1;
+    setTimeLeft(timeLeftRef.current);
+
+    // 🔔 Warn player when 5 seconds remain
+    if (
+      timeLeftRef.current === 5 &&
+      timerSoundEnabled &&
+      soundEnabled
+    ) {
+      try {
+        timerWarningPlayer.seekTo?.(0);
+        timerWarningPlayer.volume = 0.6;
+        timerWarningPlayer.play();
+      } catch (error) {
+        console.error(
+          "[TimerWarning]",
+          error?.message
+        );
       }
-    }, 1000);
-  }, []);
+    }
+
+    if (timeLeftRef.current <= 0) {
+      clearInterval(intervalRef.current);
+      handleTimeout();
+    }
+  }, 1000);
+}, [
+  timerSoundEnabled,
+  soundEnabled,
+  timerWarningPlayer,
+]);
 
   const stopTimer = useCallback(() => {
     clearInterval(intervalRef.current);
     progressAnim.stopAnimation();
   }, []);
 
-  const handleTimeout = useCallback(() => {
-    setSelected("TIMEOUT");
+const handleTimeout = useCallback(() => {
+  triggerHaptic("error");
+
+  setSelected("TIMEOUT");
     setIsCorrect(false);
     setPointsEarned(0);
     setPhase("feedback");
     triggerFlash(false);
-  }, []);
+  }, [triggerHaptic]);
 
   const handleAnswer = useCallback((answer) => {
     if (phase !== "playing") return;
     stopTimer();
     const question = questions[currentIdx];
     const correct  = answer === question.answer;
+    triggerHaptic(
+  correct ? "success" : "error"
+);
     const elapsed  = (Date.now() - startTime) / 1000;
     let points = 0;
     if (correct) {
@@ -433,7 +697,11 @@ if (title === "Network Hunter") {
   };
   const instructionText = instructionMap[questionType] ?? instructionMap.phishing;
 
-  if (questions.length === 0 && !error) {
+ if (
+  questions.length === 0 &&
+  !error &&
+  phase !== "quantumLogic"
+) {
     return (
       <View style={[styles.screen, styles.center]}>
         <ActivityIndicator color={COLORS.primary} size="large" />
@@ -476,6 +744,21 @@ if (
       user={user}
       pauseMusic={pauseMusic}
     />
+  );
+}
+if (
+  phase === "quantumLogic" &&
+  gameInfo?.title === "Quantum Logic"
+) {
+  return (
+<QuantumLogicGame
+  gameInfo={gameInfo}
+  user={user}
+  pauseMusic={pauseMusic}
+  toggleMute={toggleMute}
+  isMuted={isMuted}
+  soundEnabled={soundEnabled}
+/>
   );
 }
   return (
@@ -563,21 +846,35 @@ if (
           </Text>
         </View>
         <View style={styles.topRight}>
-          <TouchableOpacity style={styles.iconBtn} onPress={toggleMute} activeOpacity={0.8}>
-            <Text style={styles.iconBtnText}>{isMuted ? "🔇" : "🔊"}</Text>
-          </TouchableOpacity>
+        <TouchableOpacity
+  style={[
+    styles.iconBtn,
+    !soundEnabled && { opacity: 0.45 },
+  ]}
+  onPress={toggleMute}
+  activeOpacity={0.8}
+>
+  <Text style={styles.iconBtnText}>
+    {!soundEnabled || isMuted ? "🔇" : "🔊"}
+  </Text>
+</TouchableOpacity>
           {hasGlossary && (
             <TouchableOpacity style={styles.glossaryBtn} onPress={handleGlossaryOpen} activeOpacity={0.8}>
               <Text style={styles.glossaryBtnText}>📖</Text>
             </TouchableOpacity>
           )}
-          <TouchableOpacity
-            style={[styles.helpBtn, helpUsed && styles.helpBtnUsed]}
-            onPress={handleHelpPress}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.helpBtnText}>?</Text>
-          </TouchableOpacity>
+         {hintsEnabled && (
+  <TouchableOpacity
+    style={[
+      styles.helpBtn,
+      helpUsed && styles.helpBtnUsed,
+    ]}
+    onPress={handleHelpPress}
+    activeOpacity={0.8}
+  >
+    <Text style={styles.helpBtnText}>?</Text>
+  </TouchableOpacity>
+)}
         </View>
       </View>
 

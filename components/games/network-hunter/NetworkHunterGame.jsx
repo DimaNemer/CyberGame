@@ -18,10 +18,19 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { COLORS } from "../../../constants/colors";
 import { saveGameSession } from "../../../lib/api";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import NetworkMap from "./NetworkMap";
 import InvestigationCard from "./InvestigationCard";
 import HunterAnswerButtons from "./HunterAnswerButtons";
+import TourOverlay from "../TourOverlay";
+import GameGuideModal from "../GameGuideModal";
+
+import {
+  TOUR_STEPS,
+  GLOSSARY,
+  HELP_TIPS,
+} from "../../../lib/gameContent";
 
 const CLUE_SECONDS = 45;
 const ANSWER_SECONDS = 20;
@@ -31,6 +40,7 @@ const CORRECT_POINTS = 200;
 const SPEED_BONUS_POINTS = 50;
 
 const WIN_REQUIRED = 3;
+
 
 function safelySortQuestions(questions) {
   return [...questions].sort((a, b) => {
@@ -63,7 +73,13 @@ export default function NetworkHunterGame({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+const [introReady, setIntroReady] = useState(false);
 
+const [showTour, setShowTour] = useState(false);
+const [tourStep, setTourStep] = useState(0);
+
+const [showGuide, setShowGuide] = useState(false);
+const [guideMode, setGuideMode] = useState("glossary");
   const validQuestions = useMemo(
     () =>
       safelySortQuestions(
@@ -89,9 +105,7 @@ export default function NetworkHunterGame({
 
   const [inputLocked, setInputLocked] = useState(false);
 
-  const deadlineRef = useRef(
-    Date.now() + CLUE_SECONDS * 1000,
-  );
+const deadlineRef = useRef(null);
   const intervalRef = useRef(null);
   const finishedRef = useRef(false);
 
@@ -109,16 +123,24 @@ export default function NetworkHunterGame({
     solvedRef.current = solvedCount;
   }, [solvedCount]);
 
-  const updateTimer = useCallback(() => {
-    const remaining = Math.max(
-      0,
-      Math.ceil((deadlineRef.current - Date.now()) / 1000),
-    );
+const updateTimer = useCallback(() => {
+  if (!deadlineRef.current) {
+    return phase === "answering"
+      ? ANSWER_SECONDS
+      : CLUE_SECONDS;
+  }
 
-    setTimeLeft(remaining);
+  const remaining = Math.max(
+    0,
+    Math.ceil(
+      (deadlineRef.current - Date.now()) / 1000,
+    ),
+  );
 
-    return remaining;
-  }, []);
+  setTimeLeft(remaining);
+
+  return remaining;
+}, [phase]);
 
   const startPhaseTimer = useCallback((seconds) => {
     clearInterval(intervalRef.current);
@@ -135,7 +157,123 @@ export default function NetworkHunterGame({
       setTimeLeft(remaining);
     }, 250);
   }, []);
+  const startHunterGame = useCallback(() => {
+  setShowGuide(false);
+  setIntroReady(true);
 
+  setPhase("clues");
+  setVisibleClueCount(1);
+  setSelected(null);
+  setIsCorrect(null);
+  setPointsEarned(0);
+  setInputLocked(false);
+
+  startPhaseTimer(CLUE_SECONDS);
+}, [startPhaseTimer]);
+useEffect(() => {
+  let mounted = true;
+
+  async function prepareIntro() {
+    if (!user?.id || !gameInfo?.id) {
+      if (mounted) {
+        startHunterGame();
+      }
+      return;
+    }
+
+    try {
+      const key =
+        `howto_seen_${user.id}_${gameInfo.id}`;
+
+      const seen = await AsyncStorage.getItem(key);
+
+      if (!mounted) return;
+
+      if (seen === "true") {
+        startHunterGame();
+      } else {
+        setIntroReady(false);
+        setTourStep(0);
+        setShowTour(true);
+      }
+    } catch (error) {
+      console.error(
+        "[NetworkHunter intro]",
+        error?.message,
+      );
+
+      if (mounted) {
+        startHunterGame();
+      }
+    }
+  }
+
+  prepareIntro();
+
+  return () => {
+    mounted = false;
+  };
+}, [
+  gameInfo?.id,
+  startHunterGame,
+  user?.id,
+]);
+const handleTourNext = useCallback(async () => {
+  const steps =
+    TOUR_STEPS["Network Hunter"] ?? [];
+
+  const nextStep = tourStep + 1;
+
+  if (nextStep < steps.length) {
+    setTourStep(nextStep);
+    return;
+  }
+
+  try {
+    if (user?.id && gameInfo?.id) {
+      const key =
+        `howto_seen_${user.id}_${gameInfo.id}`;
+
+      await AsyncStorage.setItem(key, "true");
+    }
+  } catch (error) {
+    console.error(
+      "[NetworkHunter tour]",
+      error?.message,
+    );
+  }
+
+  setShowTour(false);
+  setGuideMode("glossary");
+  setShowGuide(true);
+}, [
+  gameInfo?.id,
+  tourStep,
+  user?.id,
+]);
+
+const handleTourSkip = useCallback(async () => {
+  try {
+    if (user?.id && gameInfo?.id) {
+      const key =
+        `howto_seen_${user.id}_${gameInfo.id}`;
+
+      await AsyncStorage.setItem(key, "true");
+    }
+  } catch (error) {
+    console.error(
+      "[NetworkHunter skip]",
+      error?.message,
+    );
+  }
+
+  setShowTour(false);
+  startHunterGame();
+}, [
+  gameInfo?.id,
+  startHunterGame,
+  user?.id,
+]);
   const finishGame = useCallback(
     async (finalSolved = solvedRef.current) => {
       if (finishedRef.current) return;
@@ -222,11 +360,11 @@ export default function NetworkHunterGame({
     }
   }, [moveToAnswerPhase, phase]);
 
-  useEffect(() => {
-    startPhaseTimer(CLUE_SECONDS);
-
-    return () => clearInterval(intervalRef.current);
-  }, [startPhaseTimer]);
+useEffect(() => {
+  return () => {
+    clearInterval(intervalRef.current);
+  };
+}, []);
 
   useEffect(() => {
     if (timeLeft <= 0 && !finishedRef.current) {
@@ -238,7 +376,11 @@ export default function NetworkHunterGame({
     const subscription = AppState.addEventListener(
       "change",
       (nextState) => {
-        if (nextState === "active") {
+     if (
+  nextState === "active" &&
+  introReady &&
+  deadlineRef.current
+) {
           const remaining = updateTimer();
 
           if (remaining <= 0) {
@@ -249,7 +391,7 @@ export default function NetworkHunterGame({
     );
 
     return () => subscription.remove();
-  }, [handleTimerExpired, updateTimer]);
+  }, [handleTimerExpired, introReady, updateTimer]);
 
   const revealNextClue = useCallback(() => {
     if (
@@ -431,7 +573,37 @@ export default function NetworkHunterGame({
             {validQuestions.length}
           </Text>
         </View>
+<View style={styles.guideActions}>
+  <TouchableOpacity
+    style={styles.guideIconButton}
+    onPress={() => {
+      setGuideMode("glossary");
+      setShowGuide(true);
+    }}
+    activeOpacity={0.8}
+    accessibilityRole="button"
+    accessibilityLabel="Open Network Hunter guide"
+  >
+    <Text style={styles.guideIconText}>
+      📖
+    </Text>
+  </TouchableOpacity>
 
+  <TouchableOpacity
+    style={styles.guideIconButton}
+    onPress={() => {
+      setGuideMode("help");
+      setShowGuide(true);
+    }}
+    activeOpacity={0.8}
+    accessibilityRole="button"
+    accessibilityLabel="Open Network Hunter tips"
+  >
+    <Text style={styles.guideIconText}>
+      ?
+    </Text>
+  </TouchableOpacity>
+</View>
         <View style={styles.scoreBox}>
           <Text style={styles.scoreLabel}>SCORE</Text>
           <Text style={styles.scoreValue}>{score}</Text>
@@ -485,8 +657,34 @@ export default function NetworkHunterGame({
           ]}
         />
       </View>
+<GameGuideModal
+  visible={showGuide}
+  title="Network Hunter Guide"
+  glossary={
+    GLOSSARY["Network Hunter"] ?? []
+  }
+  tips={HELP_TIPS.hunt ?? []}
+  mode={guideMode}
+  onClose={() => {
+    if (!introReady) {
+      startHunterGame();
+    } else {
+      setShowGuide(false);
+    }
+  }}
+/>
 
-      <ScrollView
+{showTour && (
+  <TourOverlay
+    steps={
+      TOUR_STEPS["Network Hunter"] ?? []
+    }
+    currentStep={tourStep}
+    onNext={handleTourNext}
+    onSkip={handleTourSkip}
+  />
+)}
+           <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
@@ -564,9 +762,34 @@ export default function NetworkHunterGame({
           </TouchableOpacity>
         )}
       </ScrollView>
+
+      <GameGuideModal
+        visible={showGuide}
+        title="Network Hunter Guide"
+        glossary={GLOSSARY["Network Hunter"] ?? []}
+        tips={HELP_TIPS.hunt ?? []}
+        mode={guideMode}
+        onClose={() => {
+          if (!introReady) {
+            startHunterGame();
+          } else {
+            setShowGuide(false);
+          }
+        }}
+      />
+
+      {showTour && (
+        <TourOverlay
+          steps={TOUR_STEPS["Network Hunter"] ?? []}
+          currentStep={tourStep}
+          onNext={handleTourNext}
+          onSkip={handleTourSkip}
+        />
+      )}
     </View>
   );
 }
+    
 
 const styles = StyleSheet.create({
   screen: {
@@ -578,7 +801,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
   },
+guideActions: {
+  flexDirection: "row",
+  gap: 6,
+  marginRight: 7,
+},
 
+guideIconButton: {
+  width: 34,
+  height: 34,
+  borderRadius: 10,
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: COLORS.bgCardLight,
+  borderWidth: 1,
+  borderColor: COLORS.border,
+},
+
+guideIconText: {
+  color: COLORS.textPrimary,
+  fontSize: 15,
+  fontWeight: "900",
+},
   topBar: {
     flexDirection: "row",
     alignItems: "center",

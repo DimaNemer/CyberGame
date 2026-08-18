@@ -19,10 +19,19 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { COLORS } from "../../../constants/colors";
 import { saveGameSession } from "../../../lib/api";
-
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import MazeMap from "./MazeMap";
 import MazeQuestionCard from "./MazeQuestionCard";
 import MazeAnswerButtons from "./MazeAnswerButtons";
+
+import TourOverlay from "../TourOverlay";
+import GameGuideModal from "../GameGuideModal";
+
+import {
+  TOUR_STEPS,
+  GLOSSARY,
+  HELP_TIPS,
+} from "../../../lib/gameContent";
 
 const TOTAL_SECONDS = 180;
 
@@ -61,6 +70,12 @@ export default function CryptoMazeGame({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+const [introReady, setIntroReady] = useState(false);
+const [showTour, setShowTour] = useState(false);
+const [tourStep, setTourStep] = useState(0);
+
+const [showGuide, setShowGuide] = useState(false);
+const [guideMode, setGuideMode] = useState("glossary");
 
   const orderedQuestions = useMemo(
     () => sortQuestionsSafely(questions ?? []),
@@ -101,7 +116,7 @@ export default function CryptoMazeGame({
 
   const [inputLocked, setInputLocked] = useState(false);
 
-  const deadlineRef = useRef(Date.now() + TOTAL_SECONDS * 1000);
+ const deadlineRef = useRef(null);
   const intervalRef = useRef(null);
   const finishStartedRef = useRef(false);
   const scoreRef = useRef(0);
@@ -122,18 +137,107 @@ export default function CryptoMazeGame({
   useEffect(() => {
     timeLeftRef.current = timeLeft;
   }, [timeLeft]);
+const updateRemainingTime = useCallback(() => {
+  if (!deadlineRef.current) {
+    return TOTAL_SECONDS;
+  }
 
-  const updateRemainingTime = useCallback(() => {
-    const remaining = Math.max(
-      0,
-      Math.ceil((deadlineRef.current - Date.now()) / 1000),
-    );
+  const remaining = Math.max(
+    0,
+    Math.ceil((deadlineRef.current - Date.now()) / 1000),
+  );
 
-    timeLeftRef.current = remaining;
-    setTimeLeft(remaining);
+  timeLeftRef.current = remaining;
+  setTimeLeft(remaining);
 
-    return remaining;
-  }, []);
+  return remaining;
+}, []);
+  const startMaze = useCallback(() => {
+  deadlineRef.current = Date.now() + TOTAL_SECONDS * 1000;
+  timeLeftRef.current = TOTAL_SECONDS;
+
+  setTimeLeft(TOTAL_SECONDS);
+  setShowGuide(false);
+  setIntroReady(true);
+  setPhase("playing");
+}, []);
+
+useEffect(() => {
+  let mounted = true;
+
+  async function prepareIntro() {
+    if (!user?.id || !gameInfo?.id) {
+      if (mounted) {
+        startMaze();
+      }
+      return;
+    }
+
+    try {
+      const key = `howto_seen_${user.id}_${gameInfo.id}`;
+      const seen = await AsyncStorage.getItem(key);
+
+      if (!mounted) return;
+
+      if (seen === "true") {
+        startMaze();
+      } else {
+        setIntroReady(false);
+        setTourStep(0);
+        setShowTour(true);
+      }
+    } catch (error) {
+      console.error("[CryptoMaze intro]", error?.message);
+
+      if (mounted) {
+        startMaze();
+      }
+    }
+  }
+
+  prepareIntro();
+
+  return () => {
+    mounted = false;
+  };
+}, [gameInfo?.id, startMaze, user?.id]);
+
+const handleTourNext = useCallback(async () => {
+  const steps = TOUR_STEPS["Crypto Maze"] ?? [];
+  const nextStep = tourStep + 1;
+
+  if (nextStep < steps.length) {
+    setTourStep(nextStep);
+    return;
+  }
+
+  try {
+    if (user?.id && gameInfo?.id) {
+      const key = `howto_seen_${user.id}_${gameInfo.id}`;
+      await AsyncStorage.setItem(key, "true");
+    }
+  } catch (error) {
+    console.error("[CryptoMaze tour]", error?.message);
+  }
+
+  setShowTour(false);
+  setGuideMode("glossary");
+  setShowGuide(true);
+}, [gameInfo?.id, tourStep, user?.id]);
+
+const handleTourSkip = useCallback(async () => {
+  try {
+    if (user?.id && gameInfo?.id) {
+      const key = `howto_seen_${user.id}_${gameInfo.id}`;
+      await AsyncStorage.setItem(key, "true");
+    }
+  } catch (error) {
+    console.error("[CryptoMaze skip]", error?.message);
+  }
+
+  setShowTour(false);
+  startMaze();
+}, [gameInfo?.id, startMaze, user?.id]);
 
   const finishMaze = useCallback(
     async ({ won }) => {
@@ -201,17 +305,21 @@ export default function CryptoMazeGame({
   );
 
   useEffect(() => {
-    intervalRef.current = setInterval(() => {
-      const remaining = updateRemainingTime();
+  if (!introReady || !deadlineRef.current) {
+    return;
+  }
 
-      if (remaining <= 0) {
-        clearInterval(intervalRef.current);
-        finishMaze({ won: false });
-      }
-    }, 250);
+  intervalRef.current = setInterval(() => {
+    const remaining = updateRemainingTime();
 
-    return () => clearInterval(intervalRef.current);
-  }, [finishMaze, updateRemainingTime]);
+    if (remaining <= 0) {
+      clearInterval(intervalRef.current);
+      finishMaze({ won: false });
+    }
+  }, 250);
+
+  return () => clearInterval(intervalRef.current);
+}, [finishMaze, introReady, updateRemainingTime]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener(
@@ -458,7 +566,33 @@ export default function CryptoMazeGame({
             Stage {currentStage} of 5
           </Text>
         </View>
+<View style={styles.guideActions}>
+  <TouchableOpacity
+    style={styles.guideIconButton}
+    onPress={() => {
+      setGuideMode("glossary");
+      setShowGuide(true);
+    }}
+    activeOpacity={0.8}
+    accessibilityRole="button"
+    accessibilityLabel="Open Crypto Maze guide"
+  >
+    <Text style={styles.guideIconText}>📖</Text>
+  </TouchableOpacity>
 
+  <TouchableOpacity
+    style={styles.guideIconButton}
+    onPress={() => {
+      setGuideMode("help");
+      setShowGuide(true);
+    }}
+    activeOpacity={0.8}
+    accessibilityRole="button"
+    accessibilityLabel="Open Crypto Maze tips"
+  >
+    <Text style={styles.guideIconText}>?</Text>
+  </TouchableOpacity>
+</View>
         <View style={styles.scoreBox}>
           <Text style={styles.scoreLabel}>SCORE</Text>
           <Text style={styles.scoreValue}>{score}</Text>
@@ -579,6 +713,29 @@ export default function CryptoMazeGame({
           </>
         )}
       </ScrollView>
+      <GameGuideModal
+  visible={showGuide}
+  title="Crypto Maze Guide"
+  glossary={GLOSSARY["Crypto Maze"] ?? []}
+  tips={HELP_TIPS.maze ?? []}
+  mode={guideMode}
+  onClose={() => {
+    if (!introReady) {
+      startMaze();
+    } else {
+      setShowGuide(false);
+    }
+  }}
+/>
+
+{showTour && (
+  <TourOverlay
+    steps={TOUR_STEPS["Crypto Maze"] ?? []}
+    currentStep={tourStep}
+    onNext={handleTourNext}
+    onSkip={handleTourSkip}
+  />
+)}
     </View>
   );
 }
@@ -773,4 +930,24 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "800",
   },
+  guideActions: {
+  flexDirection: "row",
+  gap: 6,
+  marginRight: 7,
+},
+guideIconButton: {
+  width: 34,
+  height: 34,
+  borderRadius: 10,
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: COLORS.bgCardLight,
+  borderWidth: 1,
+  borderColor: COLORS.border,
+},
+guideIconText: {
+  color: COLORS.textPrimary,
+  fontSize: 15,
+  fontWeight: "900",
+},
 });

@@ -39,30 +39,157 @@ export default function TourOverlay({ steps, currentStep, onNext, onSkip }) {
   const isTop    = step?.position === "top";
 
   // Highlight box position per target
-  const getHighlight = () => {
-    switch (step?.highlight) {
-      case "timer":   return { top: 130, height: 52 };
-      case "content": return { top: 205, height: 210 };
-      case "buttons": return { bottom: 85, height: 130 };
-      case "topbar":  return { top: 52,   height: 80  };
-      default:        return null;
-    }
-  };
+const getHighlight = () => {
+  switch (step?.highlight) {
+    // Existing games
+    case "timer":
+      return { top: 130, height: 52 };
+
+    case "content":
+      return { top: 205, height: 210 };
+
+    case "buttons":
+      return { bottom: 85, height: 130 };
+
+    case "topbar":
+      return { top: 52, height: 80 };
+
+    // Quantum Logic
+    case "quantum-state":
+      return {
+        top: 150,
+        height: 58,
+      };
+
+    case "quantum-grid":
+      return {
+        top: 220,
+        height: 355,
+      };
+
+    case "quantum-tabs":
+      return {
+        top: 95,
+        height: 55,
+      };
+
+    case "quantum-powers":
+      return {
+        bottom: 24,
+        height: 78,
+      };
+
+    case "quantum-dpad":
+      return {
+        right: 10,
+        bottom: 18,
+        width: 138,
+        height: 138,
+        left: undefined,
+      };
+
+    case "quantum-guide":
+      return {
+        top: 45,
+        right: 10,
+        width: 118,
+        height: 50,
+        left: undefined,
+      };
+
+    default:
+      return null;
+  }
+};
 
   // Bouncing arrow position per target
-  const getArrowPosition = () => {
-    switch (step?.highlight) {
-      case "timer":   return { top: 178,    left: "50%", marginLeft: -12 };
-      case "content": return { top: 410,    left: "50%", marginLeft: -12 };
-      case "topbar":  return { top: 128,    right: 55 };
-      case "buttons": return { bottom: 210, left: "50%", marginLeft: -12 };
-      default:        return null;
-    }
-  };
+const getArrowPosition = () => {
+  switch (step?.highlight) {
+    // Existing games
+    case "timer":
+      return {
+        top: 178,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    case "content":
+      return {
+        top: 410,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    case "topbar":
+      return {
+        top: 128,
+        right: 55,
+      };
+
+    case "buttons":
+      return {
+        bottom: 210,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    // Quantum Logic
+    case "quantum-state":
+      return {
+        top: 205,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    case "quantum-grid":
+      return {
+        top: 565,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    case "quantum-tabs":
+      return {
+        top: 145,
+        left: "50%",
+        marginLeft: -12,
+      };
+
+    case "quantum-powers":
+      return {
+        bottom: 105,
+        left: 70,
+      };
+
+    case "quantum-dpad":
+      return {
+        right: 62,
+        bottom: 150,
+      };
+
+    case "quantum-guide":
+      return {
+        top: 92,
+        right: 48,
+      };
+
+    default:
+      return null;
+  }
+};
 
   const highlight  = getHighlight();
   const arrowPos   = getArrowPosition();
-  const arrowChar  = step?.highlight === "buttons" ? "↓" : "↑";
+ const DOWN_ARROW_TARGETS = [
+  "buttons",
+  "quantum-powers",
+  "quantum-dpad",
+];
+
+const arrowChar =
+  DOWN_ARROW_TARGETS.includes(step?.highlight)
+    ? "↓"
+    : "↑";
 
   return (
     <View style={styles.container}>
@@ -71,9 +198,40 @@ export default function TourOverlay({ steps, currentStep, onNext, onSkip }) {
       <View style={styles.dimFull} />
 
       {/* Highlighted element border */}
-      {highlight && (
-        <View style={[styles.highlight, highlight]} />
-      )}
+   {highlight && (
+  <View
+    style={[
+      styles.highlight,
+
+      // Default full-width highlight
+      highlight.left === undefined &&
+      highlight.right === undefined &&
+      highlight.width === undefined
+        ? {
+            left: 12,
+            right: 12,
+          }
+        : null,
+
+      highlight,
+    ]}
+  />
+)}
+
+{highlight && (
+  <View
+    style={[
+      styles.highlight,
+
+      !isCustomWidthTarget && {
+        left: 12,
+        right: 12,
+      },
+
+      highlight,
+    ]}
+  />
+)}
 
       {/* Bouncing arrow pointer */}
       {arrowPos && (
@@ -141,6 +299,10 @@ export default function TourOverlay({ steps, currentStep, onNext, onSkip }) {
 
     </View>
   );
+
+  const isCustomWidthTarget =
+  step?.highlight === "quantum-dpad" ||
+  step?.highlight === "quantum-guide";
 }
 
 const styles = StyleSheet.create({
@@ -155,13 +317,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.78)",
     zIndex: 1000,
   },
-  highlight: {
-    position: "absolute", left: 12, right: 12,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderRadius: 16, borderWidth: 2,
-    borderColor: "rgba(59,130,246,0.7)",
-    zIndex: 1001,
-  },
+highlight: {
+  position: "absolute",
+
+  backgroundColor: "rgba(255,255,255,0.05)",
+
+  borderRadius: 16,
+  borderWidth: 2,
+  borderColor: "rgba(59,130,246,0.7)",
+
+  zIndex: 1001,
+},
   arrowPointer: {
     position: "absolute",
     fontSize: 26, color: "#fff",
